@@ -5,7 +5,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from .claude_agent import generate_action_plan
@@ -28,6 +28,23 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+# --- Lightweight API-key guard --------------------------------------------
+# Protects endpoints that write data or spend Claude/Anthropic credits from
+# anonymous abuse. Set BENEFITBRIDGE_API_KEY in the environment; clients send
+# it in the X-API-Key header. If unset, the guard is disabled (local dev).
+_API_KEY = os.getenv("BENEFITBRIDGE_API_KEY", "").strip()
+
+
+def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
+    if not _API_KEY:
+        return  # dev mode: no key configured
+    if not x_api_key or x_api_key != _API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid API key.",
+        )
 
 
 @app.on_event("startup")
@@ -62,7 +79,7 @@ def recent_assessments(limit: int = 10) -> list[dict[str, object]]:
 
 
 @app.post("/api/assessments", response_model=AssessmentResponse)
-def create_assessment(payload: AssessmentInput) -> AssessmentResponse:
+def create_assessment(payload: AssessmentInput, _: None = Depends(require_api_key)) -> AssessmentResponse:
     try:
         matches, risk_flags = run_benefit_screening(payload)
     except ValueError as exc:
@@ -93,7 +110,7 @@ def get_assessment(assessment_id: str) -> AssessmentRecord:
 
 
 @app.post("/api/action-plan", response_model=ActionPlanResponse)
-def action_plan(payload: ActionPlanRequest) -> ActionPlanResponse:
+def action_plan(payload: ActionPlanRequest, _: None = Depends(require_api_key)) -> ActionPlanResponse:
     record = load_assessment(payload.assessment_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Assessment not found")
@@ -101,7 +118,7 @@ def action_plan(payload: ActionPlanRequest) -> ActionPlanResponse:
 
 
 @app.get("/api/export/{assessment_id}")
-def export_checklist(assessment_id: str) -> dict[str, str]:
+def export_checklist(assessment_id: str, _: None = Depends(require_api_key)) -> dict[str, str]:
     record = load_assessment(assessment_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Assessment not found")
